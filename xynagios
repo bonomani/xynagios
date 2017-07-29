@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# This script is a shim to let you use "standard Nagios checks" with Xymon.
+# In fact it only supports very basic use of status codes:
+#    0 = OK;
+#    1 = Warning;
+#    2 = Critical;
+#   >2 = Also critical but because of an error in the check.
+
+# The debian-supplied "xynagios" from "hobbit-plugins" supports other things, like trends data and parsing check names out of the test output, but it also requires extra phat Perl libraries (that also aren't easily available on Fedora).
+
+# This one is at least sufficient to write simple portable checks, and lets checks focus on producing output and status codes without worrying about sending to Xymon.
+
+if [[ -z "$XYMSRV" ]]; then
+	echo '$XYMSRV is not set. You probably should wrap your use of xynagios with xymoncmd to set the environment.' >&2
+	exit 100
+fi
+
+LIFETIME='30'  # -l <lifetime>  (time to purple. default mins. can suffix h|d|w)
+HOSTNAME=''    # -h <hostname>
+TESTNAME=''    # -t <checkname>  (default is script name with check_ removed)
+DRYRUN=''      # -n  (useful for checking your checks...)
+
+while getopts ':l:h:t:n' opt; do
+	case "$opt" in
+		l)
+			LIFETIME="$OPTARG"
+			;;
+		t)
+			TESTNAME="$OPTARG"
+			;;
+		h)
+			HOSTNAME="$OPTARG"
+			;;
+		n)
+			DRYRUN='yes please'
+			;;
+		\?)
+			echo "Invalid option: $OPTARG" >&2
+			exit 100
+			;;
+	esac
+	shift $((OPTIND-1))
+	OPTIND=1
+done
+
+if [[ -z "$TESTNAME" ]]; then
+	basename="${1##*/}"
+	autoname="${basename#check_}"
+	if [[ "$basename" != "$autoname" ]]; then
+		TESTNAME="$autoname"
+	fi
+fi
+
+if [[ -z "$TESTNAME" ]]; then
+	echo 'Please pass the test name with "-t" as it doesn'\''t have an obvious "check_" name.' >&2
+	exit 100
+fi
+
+if [[ -z "$HOSTNAME" ]]; then
+	HOSTNAME="$(hostname -f)"
+fi
+
+if [[ -n "$DRYRUN" ]]; then
+	echo host "$HOSTNAME"
+	echo test "$TESTNAME"
+	echo lifetime "$LIFETIME"
+	echo $*
+fi
+
+color=red
+extra=''
+output=''
+
+output="$(eval "$@" 2>&1)"
+status=$?
+if [[ "$status" -eq 0 ]]; then
+	color=green
+elif [[ "$status" -eq 1 ]]; then
+	color=yellow
+elif [[ "$status" -ne 2 ]]; then
+	extra="$extra&red Check exited with code $status\n"
+fi
+
+HOSTNAME="${HOSTNAME//./,}"  # yay, it's a quirky system
+header="status+$LIFETIME $HOSTNAME.$TESTNAME $color"
+
+if [[ -n "$DRYRUN" ]]; then
+	echo -----
+	echo -e "$header\n$extra$output"
+else
+	xymon "$XYMSRV" "$(echo -e "$header\n$extra$output")"
+fi
